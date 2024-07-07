@@ -1,8 +1,8 @@
 <script setup>
 //test
 import { ref, computed, watch, nextTick, defineProps, defineModel, defineEmits, defineExpose } from 'vue';
-import UTextarea from '../components/UTextarea.vue';
-import * as ai from '../assets/uthentic-ai.js';
+import UTextarea from './UTextarea.vue';
+import * as ai from '../js/uthentic-ai.js';
 import ButtonOptionsList from './ButtonOptionsList.vue';
 
 
