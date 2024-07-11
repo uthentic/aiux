@@ -38,12 +38,21 @@ const markdown = computed(() => renderBulletPoints(bullets.value));
 const busy = ref({});
 var bulletLookup = {};
 var latestVersion = null;
+const startNodeIndex = ref(-1);
+const startNode = computed(() => startNodeIndex.value === -1 ? virtualRootNode.value : bullets.value[startNodeIndex.value]);
+
+const virtualRootNode = ref({
+    text: "",
+    level: -1,
+    id: ai.randomString(),
+    index: -1,
+    busy: {}
+});
 
 watch(bulletsText, initBulletPoints);
 
 function initBulletPoints() {
-    if(latestVersion == bulletsText.value)
-    {
+    if (latestVersion == bulletsText.value) {
         console.log("no change");
         return;
     }
@@ -51,6 +60,10 @@ function initBulletPoints() {
     var flat = parseBulletPointsFlat(bulletsText.value);
     bullets.value = flat;
     saveBulletPoints();
+
+    if (startNode.value === virtualRootNode.value && startNode.value.suggestions === undefined) {
+        setStartNode(virtualRootNode.value); // initialize the start node
+    }
 }
 
 initBulletPoints();
@@ -60,6 +73,10 @@ function updateBulletIndexes() {
     bullets.value.forEach((bullet, i) => {
         bullet.index = i;
         bulletLookup[bullet.text] = bullet;
+
+        //also recalculate who the children are
+        bullet.children = getChildren(bullet);
+
     });
 }
 
@@ -105,16 +122,14 @@ function renderBulletPoints(bulletPoints, mark) {
     var result = "";
 
     bulletPoints.forEach(bp => {
-        if(mark == bp)
-        {
+        if (mark == bp) {
             result += "<mark>";
 
         }
 
         result += "\t".repeat(bp.level) + "- " + bp.text;
 
-        if(mark == bp)
-        {
+        if (mark == bp) {
             result += "</mark>";
         }
 
@@ -253,8 +268,7 @@ function selectGuess(index, guess) {
 async function onEscape(bullet, event) {
     console.log("onEscape", bullet);
 
-    if(bullet.isPending)
-    {
+    if (bullet.isPending) {
         rejectAISuggestion(bullet);
         return;
     }
@@ -262,8 +276,7 @@ async function onEscape(bullet, event) {
 
 async function onEnter(bullet, event) {
 
-    if(bullet.isPending)
-    {
+    if (bullet.isPending) {
         acceptAISuggestion(bullet);
         return;
     }
@@ -306,7 +319,7 @@ async function onEnter(bullet, event) {
         id: ai.randomString(),
         level: bullet.level
     });
-    
+
     saveBulletPoints();
     await nextTick();
 
@@ -380,18 +393,16 @@ async function shiftBulletDownOneSlot(bullet) {
     var index = bullet.index;
     var baseLevel = bullet.level;
     var all = bullets.value.splice(bullet.index, children.length + 1);
-    
+
     var next = bullets.value[index];
 
-    if(next === undefined)
-    {
+    if (next === undefined) {
         //we are already at the end of the list, can't shift down
         insertBullet(index, all);
         return;
     }
 
-    if(next.level < baseLevel)
-    {
+    if (next.level < baseLevel) {
         insertBullet(index, all);
         return;
     }
@@ -433,7 +444,7 @@ async function movePrevious(bullet, event) {
         getTextRef(bullet).focus();
         return;
     }
-    
+
     //if it's the last bullet, but not the only bullet, and the current bullet is empty, remove the current bullet
     if (bulletIndex == bullets.value.length - 1 && bullets.value.length > 1 && bullet.text.trim() == "") {
         bullets.value.pop();
@@ -518,16 +529,14 @@ async function moveNext(bullet, event) {
     else if (bulletIndex == bullets.value.length - 1) {
 
         //if the last bullet is empty and it's level is greater than 0, reduce the level
-        if(bullet.text.trim() == "")
-        {
-            if(bullet.level > 0)
+        if (bullet.text.trim() == "") {
+            if (bullet.level > 0)
                 bullet.level--;
 
             saveBulletPoints();
             return;
         }
-        else
-        {
+        else {
             bullets.value.push({
                 text: "",
                 level: bullet.level,
@@ -541,7 +550,7 @@ async function moveNext(bullet, event) {
         }
     }
 
-    
+
 }
 
 function getParentIndex(bullet, parentLevel) {
@@ -572,9 +581,9 @@ function getParentIndex(bullet, parentLevel) {
 
 function insertBullet(bulletIndex, items) {
 
-    if(!Array.isArray(items))
+    if (!Array.isArray(items))
         items = [items];
-    
+
     bullets.value.splice(bulletIndex, 0, ...items);
 }
 
@@ -712,19 +721,16 @@ function onFocus(bullet) {
     currentFocusBullet.value = bullet;
 }
 
-const startNodeIndex = ref(null);
-const startNode = computed(() => startNodeIndex.value === null ? null : bullets.value[startNodeIndex.value]);
-
 function getIndex(bullet) {
     return bullet.index ?? bullet;
 }
 
-function setStartNode(bullet){
+function setStartNode(bullet) {
+    bullet ??= virtualRootNode;
 
 
-    if(bullet === null)
-    {
-        startNodeIndex.value = null;
+    if (bullet === null) {
+        startNodeIndex.value = -1;
         return;
     }
 
@@ -732,10 +738,9 @@ function setStartNode(bullet){
     bullet.busy = {};
 
     console.log("Setting start node", bullet);
-    if(startNodeIndex.value === bullet.index)
-        startNodeIndex.value = null;
-    else
-    {
+    if (startNodeIndex.value === bullet.index)
+        startNodeIndex.value = -1;
+    else {
         startNodeIndex.value = bullet.index;
     }
 
@@ -749,7 +754,7 @@ defineExpose({
     getFocusedRef
 });
 
-async function selectQuestionTopic(bullet, topic){
+async function selectQuestionTopic(bullet, topic) {
     topic = topic.value || topic;
     bullet.selectedTopic = topic;
     generateQuestions(bullet, topic);
@@ -757,13 +762,12 @@ async function selectQuestionTopic(bullet, topic){
 
 
 
-function selectAnswer(bullet, question, answer){
+function selectAnswer(bullet, question, answer) {
     //make sure the answer is a bulleted list, by checking to see if all lines start with -
-    if(ai.isBulletedList(answer))
-    {
+    if (ai.isBulletedList(answer)) {
         //parse the answer into a bulleted list
         var answers = ai.parseBulletPoints(answer);
-        
+
         //then turn the answer from a bulleted list back into a string
         answer = ai.renderBulletPoints(answers);
 
@@ -786,12 +790,12 @@ function saveQuestionAnswer(bullet, question, answer) {
 
     // if(currentFocusBullet.value)
     //     index = getParentIndex(currentFocusBullet.value, bullet.level + 1);
-    
+
     var flatBullets = parseBulletPointsFlat(answer);
 
     //offset flatBullets level by the level of the startNode
     flatBullets.forEach(x => x.level += bullet.level + 1);
-    
+
     insertBullet(index + 1, flatBullets);
 
     //remove answer from question
@@ -807,7 +811,7 @@ function clearQuestionAnswer(question) {
 async function generateQuestionTopics(bullet) {
     bullet = bullet || startNode.value;
 
-    if(!bullet.topics){
+    if (!bullet.topics) {
         bullet.topics = {};
         bullet.topics.General = { topic: "General", isEssential: true, questions: {} };
         bullet.selectedTopic = bullet.topics.General;
@@ -831,7 +835,7 @@ async function generateQuestionTopics(bullet) {
             if (x.isComplete) {
                 topics.push(values[values.length - 1]);
             }
-            
+
             topics.forEach(topicName => {
                 if (!bullet.topics[topicName]) {
                     bullet.topics[topicName] = { topic: topicName, isEssential: true, questions: {} };
@@ -856,7 +860,7 @@ async function generateQuestionTopics(bullet) {
     });
 }
 
-async function regenerateQuestions(bullet, topic){
+async function regenerateQuestions(bullet, topic) {
     topic.questions = {};
     generateQuestions(bullet, topic);
 
@@ -872,7 +876,7 @@ async function generateQuestions(bullet, topic) {
             notesPurpose: props.purpose.value,
             notes: renderBulletPoints(bullets.value, bullet),
             header: bullet.text,
-            topic: topic.topic
+            topic: topic.topic == "General" ? "" : topic.topic
         },
         "$busy": (x) => topic.busy = x,
         "question": x => {
@@ -882,9 +886,8 @@ async function generateQuestions(bullet, topic) {
             if (x.isComplete) {
                 questions.push(values[values.length - 1]);
             }
-            
-            if(questions)
-            {
+
+            if (questions) {
                 questions.forEach(questionText => {
                     if (!topic.questions[questionText]) {
                         topic.questions[questionText] = { questionText: questionText, topic: topic.topic, selectedAnswers: [], answers: [] };
@@ -895,8 +898,8 @@ async function generateQuestions(bullet, topic) {
     });
 }
 
-async function openQuestion(bullet, question){
-    if(question.answers.length)
+async function openQuestion(bullet, question) {
+    if (question.answers.length)
         return;
 
     generateAnswers(bullet, question);
@@ -919,40 +922,37 @@ async function generateAnswers(bullet, question) {
     });
 }
 
-async function generateSuggestions(){
-    if(!startNode.value.suggestions)
+async function generateSuggestions() {
+    if (!startNode.value.suggestions)
         startNode.value.suggestions = [];
 
-    
+
 
     var nodeSuggestions = startNode.value.suggestions;
     var currentStartNode = startNode.value;
     currentStartNode.busy.suggestions = true;
 
-    await ai.streamFlowXML("flow://v3uzum97UQ3QNbhb", {
+    await ai.streamFlowXML("flow://KBCvlStoiQxkibq6", {
         "$vars": {
             notesPurpose: props.purpose.value,
             notes: renderBulletPoints(bullets.value, startNode.value),
             header: startNode.value.text
         },
         "$busy": (x) => currentStartNode.busy.suggestions = x,
-        "child": x => {
+        "point": x => {
             x.values.forEach(suggestion => {
                 var index = nodeSuggestions.findIndex(x => x.raw == suggestion);
 
-                if(index == -1)
-                {
-                    
+                if (index == -1) {
+
                     var text = suggestion.trim();
-                    if(text.startsWith("-"))
+                    if (text.startsWith("-"))
                         text = text.substring(1).trim();
 
-                    if(nodeSuggestions.length > 0)
-                    {
+                    if (nodeSuggestions.length > 0) {
                         //check to see if the last item in suggestions starts with suggestion
                         var last = nodeSuggestions[nodeSuggestions.length - 1];
-                        if(suggestion.startsWith(last.raw))
-                        {
+                        if (suggestion.startsWith(last.raw)) {
                             last.raw = suggestion;
                             last.text = text;
                             return;
@@ -960,8 +960,6 @@ async function generateSuggestions(){
                         }
                     }
 
-                    
-                    
                     nodeSuggestions.push({
                         raw: suggestion,
                         text: text,
@@ -982,56 +980,52 @@ async function generateSuggestions(){
 const bulletBreadcrumbs = computed(() => {
     var items = [];
 
-    if(startNodeIndex.value === null)
+    if (startNodeIndex.value === -1)
         return items;
 
     var bullet = bullets.value[startNodeIndex.value];
     items.push(bullet);
 
-    while(bullet.level > 0)
-    {
+    while (bullet.level > 0) {
         var parentIndex = getParentIndex(bullet);;
         bullet = bullets.value[parentIndex];
         items.unshift(bullet);
     }
 
-    return items.map(x => ({text: x.text, id: x.id, level: x.level, bullet: x, index: x.index}));
+    return items.map(x => ({ text: x.text, id: x.id, level: x.level, bullet: x, index: x.index }));
 });
 
 
 const bulletsToRender = computed(() => {
     var items = [];
 
-    if(bullets.value.length == 0)
-        items = [{text: "", children: [], level: 0, id: ai.randomString()}];
+    if (bullets.value.length == 0)
+        items = [{ text: "", children: [], level: 0, id: ai.randomString() }];
 
 
-    if(startNodeIndex.value === null)
+    if (startNodeIndex.value === -1)
         items = [...bullets.value];
-    else
-    {
+    else {
         var children = getChildren(startNode.value);
 
-        if(children?.length == 0)
+        if (children?.length == 0)
             items = [startNode.value];
-        else 
+        else
             items = [startNode.value, ...children];
     }
 
     //loop through items and remove any items that are a child of a bullet that isCollapsed
-    for(var i = 0; i < items.length; i++)
-    {
+    for (var i = 0; i < items.length; i++) {
         var bullet = items[i];
 
-        if(bullet.isCollapsed)
-        {
+        if (bullet.isCollapsed) {
             var children = getChildren(bullet);
             items.splice(i + 1, children.length);
         }
     }
 
 
-    if(startNode.value?.suggestions?.length)
+    if (startNode.value?.suggestions?.length)
         items = [...items, ...startNode.value.suggestions];
 
     console.log(items);
@@ -1063,7 +1057,7 @@ async function acceptAISuggestion(point) {
     var nextIndex = bullet.index + children.length + 1;
     var level = bullet.level;
 
-    if(children.length)
+    if (children.length)
         level++;
 
     var points = parseBulletPointsFlat(point.raw);
@@ -1081,12 +1075,12 @@ async function acceptAISuggestion(point) {
     onFocus(suggestions[index] || suggestions[index - 1]);
 }
 
-function getBulletChar(bullet){
+function getBulletChar(bullet) {
     var bulletChars = ["\u2022", "\u25E6", "\u25AA"];
     return bulletChars[bullet.level % bulletChars.length];
 }
 
-function toggleBulletVisibility(bullet){
+function toggleBulletVisibility(bullet) {
     bullet.isCollapsed = !bullet.isCollapsed;
 }
 
@@ -1104,12 +1098,14 @@ function toggleBulletVisibility(bullet){
                 </sl-menu>
             </sl-dropdown>
             <sl-breadcrumb>
-                <sl-breadcrumb-item @click="setStartNode(null)">Notes</sl-breadcrumb-item>
-                <sl-breadcrumb-item v-for="bc in bulletBreadcrumbs" @click="setStartNode(bc.bullet)">{{bc.text}}</sl-breadcrumb-item>
+                <sl-breadcrumb-item @click="setStartNode(-1)">Notes</sl-breadcrumb-item>
+                <sl-breadcrumb-item v-for="bc in bulletBreadcrumbs"
+                    @click="setStartNode(bc.bullet)">{{ bc.text }}</sl-breadcrumb-item>
             </sl-breadcrumb>
         </div>
-        
-        <div class="bullet" v-for="bullet in bulletsToRender" :class="{focus: currentFocusBullet === bullet, isPending: bullet.isPending }">
+
+        <div class="bullet" v-for="bullet in bulletsToRender"
+            :class="{ focus: currentFocusBullet === bullet, isPending: bullet.isPending }">
             <div class="flex-one-line align-start">
                 <div class="collapse-button" @click="toggleBulletVisibility(bullet)">
                     <div v-if="bullet.children?.length">
@@ -1117,7 +1113,8 @@ function toggleBulletVisibility(bullet){
                         <sl-icon name="chevron-down" v-else></sl-icon>
                     </div>
                 </div>
-                <div class="margin" :style="{ minWidth: `calc(var(--sl-spacing-2x-large) * ${bullet.level - (startNode?.level ?? 0)} + 3rem + 2px)` }">
+                <div class="margin"
+                    :style="{ minWidth: `calc(var(--sl-spacing-2x-large) * ${bullet.level - (startNode?.level ?? 0)} + 3rem + 2px)` }">
                     <span class="magic">
                         <sl-dropdown @click="onFocus(bullet)" style="text-align: left;">
                             <sl-icon-button slot="trigger" name="three-dots-vertical"></sl-icon-button>
@@ -1145,41 +1142,25 @@ function toggleBulletVisibility(bullet){
                         </sl-dropdown>
                         <sl-icon name="magic" @click="setStartNode(bullet)"></sl-icon>
                     </span>
-                    <span class="bullet-char">{{getBulletChar(bullet)}}</span>
+                    <span class="bullet-char">{{ getBulletChar(bullet) }}</span>
                 </div>
                 <div class="content">
                     <!-- v-model="bullets[getIndex(bullet)].text" -->
-                    <UTextarea 
-                        borderless="true" 
-                        min-rows="1"
-                        v-model="bullet.text"
-
-                        @keypress.enter.stop.prevent=   "onEnter(bullet, $event)" 
-                        @keydown.escape.stop.prevent=   "onEscape(bullet, $event)" 
-
-                        @keydown.arrow-up=              "movePrevious(bullet, $event)"
-                        @keydown.arrow-down=            "moveNext(bullet, $event)" 
-
-                        @keydown.backspace=             "onBackspace(bullet, $event)"
-
-                        @keydown.tab.prevent=           "onTab(bullet, $event)" 
-                        @keydown.shift.tab.prevent=     "onShiftTab(bullet, $event)"
-
-                        @keydown.ctrl.z.prevent=        "undo()" 
-                        @keydown.ctrl.y.prevent=        "redo()" 
-
-                        @blur=                          "onBlur(bullet, $event)"
-                        @focus=                         "onFocus(bullet)" 
-
-                        :ref=                           "(el) => setTextRef(el, bullet)"
-                        @change=                        "itemChanged(bullet, $event)"
-                    ></UTextarea>
+                    <UTextarea borderless="true" min-rows="1" v-model="bullet.text"
+                        @keypress.enter.stop.prevent="onEnter(bullet, $event)"
+                        @keydown.escape.stop.prevent="onEscape(bullet, $event)"
+                        @keydown.arrow-up="movePrevious(bullet, $event)" @keydown.arrow-down="moveNext(bullet, $event)"
+                        @keydown.backspace="onBackspace(bullet, $event)" @keydown.tab.prevent="onTab(bullet, $event)"
+                        @keydown.shift.tab.prevent="onShiftTab(bullet, $event)" @keydown.ctrl.z.prevent="undo()"
+                        @keydown.ctrl.y.prevent="redo()" @blur="onBlur(bullet, $event)" @focus="onFocus(bullet)"
+                        :ref="(el) => setTextRef(el, bullet)" @change="itemChanged(bullet, $event)"></UTextarea>
 
                     <div v-if="currentFocusBullet === bullet">
                         <div v-if="bullet.isPending">
                             <sl-icon-button name="hand-thumbs-up" @click="acceptAISuggestion(bullet)"></sl-icon-button>
                             <sl-icon-button name="shuffle"></sl-icon-button>
-                            <sl-icon-button name="hand-thumbs-down" @click="rejectAISuggestion(bullet)"></sl-icon-button>
+                            <sl-icon-button name="hand-thumbs-down"
+                                @click="rejectAISuggestion(bullet)"></sl-icon-button>
                         </div>
                     </div>
                 </div>
@@ -1188,8 +1169,9 @@ function toggleBulletVisibility(bullet){
         <div class="bullet" v-if="startNode?.busy?.suggestions">
             <div class="flex-one-line align-start">
                 <div class="collapse-button"></div>
-                <div class="margin" :style="{ minWidth: `calc(var(--sl-spacing-2x-large) * ${1} + var(--sl-spacing-2x-large))` }">
-                    <span class="bullet-char">{{getBulletChar({level: 1})}}</span>
+                <div class="margin"
+                    :style="{ minWidth: `calc(var(--sl-spacing-2x-large) * ${1} + var(--sl-spacing-2x-large))` }">
+                    <span class="bullet-char">{{ getBulletChar({ level: 1 }) }}</span>
                 </div>
                 <div class="content">
                     Loading suggestions...
@@ -1198,32 +1180,42 @@ function toggleBulletVisibility(bullet){
             </div>
         </div>
 
-        <div v-if="startNode">
-            <!-- <sl-button @click="generateQuestionTopics(startNode)">Generate Q&A</sl-button> -->
-            <h6 style="margin-top: var(--sl-spacing-x-large)">Topics to Explore:</h6>
-            
+        <sl-tab-group>
+            <sl-tab slot="nav" panel="qa">Q&A</sl-tab>
+            <sl-tab slot="nav" panel="custom">Custom</sl-tab>
 
-            <ButtonOptionsList v-model="startNode.topics" @select="selectQuestionTopic(startNode, $event)" :busy="startNode.busy.topics"></ButtonOptionsList>
+            <sl-tab-panel name="qa">
+                <div v-if="startNode">
+                    <!-- <sl-button @click="generateQuestionTopics(startNode)">Generate Q&A</sl-button> -->
+                    <h6 style="margin-top: var(--sl-spacing-x-large)">Topics to Explore:</h6>
 
-            <div v-if="startNode?.selectedTopic?.questions" style="margin-top: var(--sl-spacing-small)">
-                <div v-if="Object.keys(startNode.selectedTopic.questions).length == 0">
-                    Considering questions for {{startNode.selectedTopic.topic.toLowerCase()}}...
-                    <sl-spinner></sl-spinner>
-                </div>
-                <div v-else>
-                    <sl-button variant="text" size="small" @click="regenerateQuestions(startNode, startNode.selectedTopic)">Regenerate Questions</sl-button>
-                </div>
-                <div v-for="(question, key) in startNode.selectedTopic.questions" class="my-small">
-                    <sl-details @sl-show="openQuestion(startNode, question)">
-                        <div slot="summary" style="font-weight: 500;">
-                            <div class="flex-one-line align-start">
-                                <sl-icon name="check-lg" v-if="question.selectedAnswers.length" class="question-check-icon"></sl-icon>
-                                <div>
-                                    {{question.questionText}}
-                                </div>
-                            </div>
+
+                    <ButtonOptionsList v-if="startNode.topics" v-model="startNode.topics"
+                        @select="selectQuestionTopic(startNode, $event)" :busy="startNode.busy.topics">
+                    </ButtonOptionsList>
+
+                    <div v-if="startNode?.selectedTopic?.questions" style="margin-top: var(--sl-spacing-small)">
+                        <div v-if="Object.keys(startNode.selectedTopic.questions).length == 0">
+                            Considering questions for {{ startNode.selectedTopic.topic.toLowerCase() }}...
+                            <sl-spinner></sl-spinner>
                         </div>
-                        <!-- <div class="adjust-up">
+                        <div v-else>
+                            <sl-button variant="text" size="small"
+                                @click="regenerateQuestions(startNode, startNode.selectedTopic)">Regenerate
+                                Questions</sl-button>
+                        </div>
+                        <div v-for="(question, key) in startNode.selectedTopic.questions" class="my-small">
+                            <sl-details @sl-show="openQuestion(startNode, question)">
+                                <div slot="summary" style="font-weight: 500;">
+                                    <div class="flex-one-line align-start">
+                                        <sl-icon name="check-lg" v-if="question.selectedAnswers.length"
+                                            class="question-check-icon"></sl-icon>
+                                        <div>
+                                            {{ question.questionText }}
+                                        </div>
+                                    </div>
+                                </div>
+                                <!-- <div class="adjust-up">
                             <sl-animation>
                                 <sl-textarea class="questionAnswer" v-model="question.answer" filled placeholder="Type your answer here, or select an answer below" rows="2" resize="auto">
                                 </sl-textarea>
@@ -1233,35 +1225,32 @@ function toggleBulletVisibility(bullet){
                                 <sl-button variant="default" size="small" @click="clearQuestionAnswer(question)">Clear</sl-button>
                             </div>
                         </div> -->
-                        <div v-if="question.busy" class="adjust-up">
-                            Loading answer suggestions... <sl-spinner></sl-spinner>
+                                <div v-if="question.busy" class="adjust-up">
+                                    Loading answer suggestions... <sl-spinner></sl-spinner>
+                                </div>
+                                <div v-if="!question.answer?.trim()?.length"
+                                    style="margin-top: var(--sl-spacing-2x-small);">
+                                    <sl-card class="selectable" v-for="answer in question.answers"
+                                        @click="saveQuestionAnswer(startNode, question, answer)">
+                                        <div v-html="ai.html(answer)"></div>
+                                    </sl-card>
+                                </div>
+                            </sl-details>
                         </div>
-                        <div v-if="!question.answer?.trim()?.length" style="margin-top: var(--sl-spacing-2x-small);">
-                            <sl-card class="selectable" v-for="answer in question.answers" @click="saveQuestionAnswer(startNode, question, answer)">
-                                <div v-html="ai.html(answer)"></div>
-                            </sl-card>
-                        </div>
-                    </sl-details>
+                    </div>
                 </div>
-            </div>
-        </div>
+            </sl-tab-panel>
+            <sl-tab-panel name="custom">
+                <UTextarea label="What would you like to do?"></UTextarea>
 
-        
+            </sl-tab-panel>
+        </sl-tab-group>
 
-        <div v-if="bulletAI[startNode?.id ?? 'root']">
-            <ButtonOptionsList v-model="bulletAI[startNode?.id ?? 'root'].themes" @select="makeGuess(i, $event)"></ButtonOptionsList>
-        </div>
 
-        <div class="guesses">
-            <sl-card v-for="guess in bulletAI[startNode?.id ?? 'root']?.guesses" class="selectable" @click="selectGuess(i, guess)">
-                {{ guess }}
-            </sl-card>
-        </div>
     </div>
 </template>
 
 <style scoped>
-
 .collapse-button {
     flex-grow: 0;
     cursor: pointer;
@@ -1339,7 +1328,7 @@ function toggleBulletVisibility(bullet){
 
 .bullet:hover:not(.isPending) .bullet-char,
 .bullet.focus:not(.isPending) .bullet-char {
-     display: none; 
+    display: none;
 }
 
 .magic:hover {
@@ -1351,7 +1340,7 @@ function toggleBulletVisibility(bullet){
     line-height: 1em;
 }
 
-sl-details > .adjust-up {
+sl-details>.adjust-up {
     position: relative;
     top: calc(var(--sl-spacing-medium) * -1 + 5px);
     height: 0;
